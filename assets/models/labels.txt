@@ -1,0 +1,23 @@
+Burger
+Pizza
+Sushi
+Nasi Goreng
+Salad
+Ice Cream
+Spaghetti
+Taco
+Sandwich
+French Fries
+Donut
+Hot Dog
+Cake
+Fried Rice
+Steak
+Omelette
+Soup
+Curry
+Dim Sum
+Pancake
+Bakmie / Noodles
+Ramen
+Mie Goreng
