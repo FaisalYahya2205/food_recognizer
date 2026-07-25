@@ -43,11 +43,18 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _requestPermissions() async {
-    await [
-      Permission.camera,
-      Permission.storage,
-      Permission.photos,
-    ].request();
+    if (Platform.isIOS) {
+      await [
+        Permission.camera,
+        Permission.photos,
+      ].request();
+    } else {
+      await [
+        Permission.camera,
+        Permission.storage,
+        Permission.photos,
+      ].request();
+    }
   }
 
   Future<void> _initCamera() async {
@@ -156,6 +163,11 @@ class _HomeScreenState extends State<HomeScreen> {
     } catch (e) {
       setState(() => _isLoading = false);
       debugPrint('Error pick/crop image: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Gagal memproses gambar. Silakan coba lagi.')),
+        );
+      }
     }
   }
 

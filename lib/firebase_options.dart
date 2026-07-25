@@ -42,7 +42,7 @@ class DefaultFirebaseOptions {
   );
 
   static const FirebaseOptions android = FirebaseOptions(
-    apiKey: '',
+    apiKey: 'AIzaSyA42HIRGEqLJ9tzw8P9fcDRpT_QWjpbMbE',
     appId: '1:1097844958640:android:4832ff958fd01d0042a275',
     messagingSenderId: '1097844958640',
     projectId: 'food-recognizer-56804',
@@ -50,7 +50,7 @@ class DefaultFirebaseOptions {
   );
 
   static const FirebaseOptions ios = FirebaseOptions(
-    apiKey: '',
+    apiKey: 'AIzaSyAuQU9C0lXDzZkpY4KW0IXyYy-8xs6q7Fs',
     appId: '1:1097844958640:ios:977d383bd13246a042a275',
     messagingSenderId: '1097844958640',
     projectId: 'food-recognizer-56804',
