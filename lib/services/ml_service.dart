@@ -6,7 +6,11 @@ import 'package:flutter/services.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_ml_model_downloader/firebase_ml_model_downloader.dart';
 import 'package:flutter_litert/flutter_litert.dart';
+import 'package:http/http.dart' as http;
 import 'package:image/image.dart' as img;
+import 'package:path_provider/path_provider.dart';
+
+enum ModelSource { none, firebaseMl, firebaseStorage, localAsset }
 
 class RecognitionResult {
   final String label;
@@ -21,17 +25,32 @@ class RecognitionResult {
 }
 
 class MLService {
+  static const _assetModelPath = 'assets/models/food_classifier.tflite';
+  static const _storageModelUrl =
+      'https://firebasestorage.googleapis.com/v0/b/food-recognizer-56804.firebasestorage.app/o/models%2Ffood_classifier.tflite?alt=media';
+  static const _minModelBytes = 1024;
+  static const _minConfidence = 0.25;
+
   Interpreter? _interpreter;
   List<String> _labels = [];
   bool _isModelLoaded = false;
+  ModelSource modelSource = ModelSource.none;
+  int _inputSize = 224;
+  int _outputClassCount = 0;
+  TensorType _inputType = TensorType.float32;
+  TensorType _outputType = TensorType.float32;
+  QuantizationParams _outputQuant = QuantizationParams(1.0, 0);
 
   bool get isModelLoaded => _isModelLoaded;
+  bool get labelsMatchModel =>
+      _labels.isNotEmpty && _outputClassCount > 0 && _labels.length == _outputClassCount;
+  ModelSource get loadedFrom => modelSource;
   List<String> get labels => List.unmodifiable(_labels);
 
   Future<void> initialize() async {
     try {
       await _loadLabels();
-      await _loadFirebaseOrLocalModel();
+      await _loadModel();
     } catch (e) {
       debugPrint('MLService initialization error: $e');
     }
@@ -47,227 +66,294 @@ class MLService {
           .toList();
     } catch (e) {
       debugPrint('Error loading labels.txt: $e');
-      _labels = ['Burger', 'Pizza', 'Sushi', 'Nasi Goreng', 'Salad', 'Spaghetti', 'Taco', 'Bakmie / Noodles', 'Mie Goreng'];
+      rethrow;
     }
   }
 
-  Future<void> _loadFirebaseOrLocalModel() async {
+  Future<void> _loadModel() async {
     File? modelFile;
 
-    // Try downloading dynamic model from Firebase ML
-    try {
-      if (Firebase.apps.isNotEmpty) {
-        final customModel = await FirebaseModelDownloader.instance.getModel(
-          "food_classifier",
-          FirebaseModelDownloadType.localModelUpdateInBackground,
-          FirebaseModelDownloadConditions(
-            iosAllowsCellularAccess: true,
-            androidChargingRequired: false,
-            androidWifiRequired: false,
-            androidDeviceIdleRequired: false,
-          ),
-        );
-        modelFile = customModel.file;
-        debugPrint('Downloaded Firebase ML Model at: ${modelFile.path}');
-      }
-    } catch (e) {
-      debugPrint('Firebase ML Model download fallback to local asset: $e');
+    modelFile = await _tryFirebaseMlDownload();
+    modelFile ??= await _tryFirebaseStorageDownload();
+    modelFile ??= await _copyAssetModelToCache();
+    if (modelFile != null && modelSource == ModelSource.none) {
+      modelSource = ModelSource.localAsset;
+    }
+
+    if (modelFile == null || !await _isValidModelFile(modelFile)) {
+      final loadedFromAsset = await _loadModelFromBundledAsset();
+      if (loadedFromAsset) return;
+
+      _isModelLoaded = false;
+      debugPrint(
+        'Model ML tidak valid. Pastikan assets/models/food_classifier.tflite '
+        'dan assets/models/labels.txt tersedia dan ukuran model > 1 KB.',
+      );
+      return;
     }
 
     try {
-      if (modelFile != null && await modelFile.exists()) {
-        _interpreter = Interpreter.fromFile(modelFile);
-      } else {
-        _interpreter = await Interpreter.fromAsset('assets/models/food_classifier.tflite');
-      }
+      _interpreter = Interpreter.fromFile(modelFile);
+      _configureInterpreterShapes();
       _isModelLoaded = true;
-      debugPrint('LiteRT Interpreter loaded successfully.');
+      debugPrint('LiteRT model loaded from ${modelSource.name}: ${modelFile.path}');
     } catch (e) {
+      _interpreter = null;
+      _isModelLoaded = false;
       debugPrint('Error creating LiteRT Interpreter: $e');
-      _isModelLoaded = true;
     }
   }
 
-  /// Run heavy image decoding and tensor preparation in Isolate (Background Thread)
+  Future<bool> _loadModelFromBundledAsset() async {
+    try {
+      final bytes = await rootBundle.load(_assetModelPath);
+      if (bytes.lengthInBytes < _minModelBytes) return false;
+
+      _interpreter = await Interpreter.fromAsset(_assetModelPath);
+      modelSource = ModelSource.localAsset;
+      _configureInterpreterShapes();
+      _isModelLoaded = true;
+      debugPrint('LiteRT model loaded from bundled asset');
+      return true;
+    } catch (e) {
+      debugPrint('Bundled asset model unavailable: $e');
+      return false;
+    }
+  }
+
+  Future<File?> _tryFirebaseMlDownload() async {
+    try {
+      if (Firebase.apps.isEmpty) return null;
+
+      final customModel = await FirebaseModelDownloader.instance.getModel(
+        'food_classifier',
+        FirebaseModelDownloadType.localModelUpdateInBackground,
+        FirebaseModelDownloadConditions(
+          iosAllowsCellularAccess: true,
+          androidChargingRequired: false,
+          androidWifiRequired: false,
+          androidDeviceIdleRequired: false,
+        ),
+      );
+
+      final file = customModel.file;
+      if (await _isValidModelFile(file)) {
+        modelSource = ModelSource.firebaseMl;
+        debugPrint('Firebase ML model at: ${file.path}');
+        return file;
+      }
+    } catch (e) {
+      debugPrint('Firebase ML download failed: $e');
+    }
+    return null;
+  }
+
+  Future<File?> _tryFirebaseStorageDownload() async {
+    try {
+      final response = await http.get(Uri.parse(_storageModelUrl)).timeout(
+            const Duration(seconds: 20),
+          );
+      if (response.statusCode != 200 || response.bodyBytes.length < _minModelBytes) {
+        return null;
+      }
+
+      final dir = await getApplicationDocumentsDirectory();
+      final file = File('${dir.path}/food_classifier_remote.tflite');
+      await file.writeAsBytes(response.bodyBytes, flush: true);
+
+      modelSource = ModelSource.firebaseStorage;
+      debugPrint('Firebase Storage model saved to: ${file.path}');
+      return file;
+    } catch (e) {
+      debugPrint('Firebase Storage download failed: $e');
+      return null;
+    }
+  }
+
+  Future<File?> _copyAssetModelToCache() async {
+    try {
+      final bytes = await rootBundle.load(_assetModelPath);
+      if (bytes.lengthInBytes < _minModelBytes) {
+        return null;
+      }
+
+      final dir = await getApplicationDocumentsDirectory();
+      final file = File('${dir.path}/food_classifier_asset.tflite');
+      await file.writeAsBytes(bytes.buffer.asUint8List(), flush: true);
+      return file;
+    } catch (e) {
+      debugPrint('Local asset model unavailable: $e');
+      return null;
+    }
+  }
+
+  Future<bool> _isValidModelFile(File file) async {
+    if (!await file.exists()) return false;
+    final size = await file.length();
+    return size >= _minModelBytes;
+  }
+
+  void _configureInterpreterShapes() {
+    if (_interpreter == null) return;
+
+    final inputTensor = _interpreter!.getInputTensor(0);
+    final outputTensor = _interpreter!.getOutputTensor(0);
+    final inputShape = inputTensor.shape;
+    final outputShape = outputTensor.shape;
+
+    if (inputShape.length >= 3) {
+      _inputSize = inputShape[inputShape.length - 2];
+    }
+    _outputClassCount = outputShape.last;
+    _inputType = inputTensor.type;
+    _outputType = outputTensor.type;
+    _outputQuant = outputTensor.params;
+
+    if (_labels.isNotEmpty && !labelsMatchModel) {
+      debugPrint(
+        'ERROR: labels (${_labels.length}) tidak cocok dengan output model '
+        '($_outputClassCount). Prediksi dinonaktifkan sampai file diselaraskan.',
+      );
+    }
+
+    debugPrint(
+      'Model input shape: $inputShape ($_inputType), '
+      'output shape: $outputShape ($_outputType, $_outputQuant)',
+    );
+  }
+
   Future<RecognitionResult> classifyImage(File imageFile) async {
     final imageBytes = await imageFile.readAsBytes();
     return classifyImageBytes(imageBytes);
   }
 
   Future<RecognitionResult> classifyImageBytes(Uint8List imageBytes) async {
+    if (!_isModelLoaded || _interpreter == null) {
+      return RecognitionResult(label: 'Model belum tersedia', confidence: 0.0);
+    }
+
     if (_labels.isEmpty) {
       await _loadLabels();
     }
 
-    final localLabels = List<String>.from(_labels);
-
-    // Step 1: Execute heavy image decoding & visual profiling in background Isolate
-    final preparedData = await Isolate.run(() {
-      final decodedImage = img.decodeImage(imageBytes);
-      if (decodedImage == null) {
-        return _IsolateResult(
-          tensorInput: null,
-          fallbackResult: RecognitionResult(label: 'Unknown', confidence: 0.0),
-        );
-      }
-
-      final resizedImage = img.copyResize(decodedImage, width: 224, height: 224);
-
-      // Build Float32 input tensor array (1x224x224x3)
-      var inputTensor = List.generate(
-        1,
-        (b) => List.generate(
-          224,
-          (y) => List.generate(
-            224,
-            (x) {
-              final pixel = resizedImage.getPixel(x, y);
-              return [pixel.r / 255.0, pixel.g / 255.0, pixel.b / 255.0];
-            },
-          ),
-        ),
+    if (!labelsMatchModel) {
+      return RecognitionResult(
+        label: 'Model dan label tidak cocok',
+        confidence: 0.0,
       );
-
-      final visualResult = _analyzeVisualFeatures(resizedImage, localLabels);
-
-      return _IsolateResult(
-        tensorInput: inputTensor,
-        fallbackResult: visualResult,
-      );
-    });
-
-    // Step 2: Run LiteRT Interpreter if valid model is loaded
-    if (_interpreter != null && preparedData.tensorInput != null) {
-      try {
-        var output = List.filled(1 * localLabels.length, 0.0).reshape([1, localLabels.length]);
-        _interpreter!.run(preparedData.tensorInput!, output);
-
-        List<double> probabilities = List<double>.from(output[0]);
-        int maxIndex = 0;
-        double maxProb = -1.0;
-        for (int i = 0; i < probabilities.length; i++) {
-          if (probabilities[i] > maxProb) {
-            maxProb = probabilities[i];
-            maxIndex = i;
-          }
-        }
-        if (maxProb > 0.1) {
-          final label = maxIndex < localLabels.length ? localLabels[maxIndex] : 'Bakmie / Noodles';
-          return RecognitionResult(label: label, confidence: maxProb.clamp(0.75, 0.98));
-        }
-      } catch (e) {
-        debugPrint('Interpreter execution note: $e');
-      }
     }
 
-    // Step 3: Return high-accuracy visual feature classification result
-    return preparedData.fallbackResult;
+    final inputSize = _inputSize;
+    final outputSize = _outputClassCount;
+    final useUint8Input = _inputType == TensorType.uint8;
+
+    final inputTensor = await Isolate.run(
+      () => _prepareInputTensor(
+        imageBytes,
+        inputSize,
+        useUint8Input: useUint8Input,
+      ),
+    );
+    if (inputTensor == null) {
+      return RecognitionResult(label: 'Gambar tidak valid', confidence: 0.0);
+    }
+
+    try {
+      final scores = _runInference(inputTensor, outputSize);
+      final ranked = _rankScores(scores);
+      _logTopPredictions(ranked);
+
+      final best = ranked.first;
+      if (best.value < _minConfidence) {
+        return RecognitionResult(label: 'Makanan tidak dikenali', confidence: best.value);
+      }
+
+      final rawLabel = best.key < _labels.length ? _labels[best.key] : 'Unknown';
+      return RecognitionResult(
+        label: rawLabel,
+        confidence: best.value.clamp(0.0, 1.0),
+      );
+    } catch (e) {
+      debugPrint('Interpreter execution failed: $e');
+      return RecognitionResult(label: 'Prediksi gagal', confidence: 0.0);
+    }
   }
 
-  static RecognitionResult _analyzeVisualFeatures(img.Image image, List<String> availableLabels) {
-    double totalR = 0, totalG = 0, totalB = 0;
-    int pixelCount = 0;
-    int greenCount = 0;
-    int yellowCount = 0;
-    int redCount = 0;
-    int whiteCount = 0;
-    int brownCount = 0;
-    int hashAcc = 0;
-
-    for (int y = 0; y < image.height; y += 3) {
-      for (int x = 0; x < image.width; x += 3) {
-        final pixel = image.getPixel(x, y);
-        final r = pixel.r.toInt();
-        final g = pixel.g.toInt();
-        final b = pixel.b.toInt();
-
-        totalR += r;
-        totalG += g;
-        totalB += b;
-        pixelCount++;
-        hashAcc = (hashAcc * 31 + r * 17 + g * 7 + b) & 0x7FFFFFFF;
-
-        // Green (Salad / Veggies)
-        if (g > r + 15 && g > b + 15 && g > 70) {
-          greenCount++;
-        }
-        // Yellow (Fries / Omelette / Cheese)
-        else if (r > 160 && g > 140 && b < 110) {
-          yellowCount++;
-        }
-        // Red (Pizza sauce / Tomato / Pepperoni)
-        else if (r > 150 && g < 110 && b < 110) {
-          redCount++;
-        }
-        // White / Light (Rice / Cream / Frosting)
-        else if (r > 190 && g > 190 && b > 190) {
-          whiteCount++;
-        }
-        // Brown (Noodles / Soy Sauce / Meat Patty / Steak)
-        else if (r > 100 && g > 50 && b < 90 && r > g && g > b) {
-          brownCount++;
-        }
-      }
+  List<double> _runInference(List<dynamic> inputTensor, int outputSize) {
+    if (_outputType == TensorType.uint8) {
+      final output = List.filled(outputSize, 0).reshape([1, outputSize]);
+      _interpreter!.run(inputTensor, output);
+      return _dequantizeOutput(List<int>.from(output[0]));
     }
 
-    final avgR = totalR / pixelCount;
-    final avgG = totalG / pixelCount;
+    final output = List.filled(outputSize, 0.0).reshape([1, outputSize]);
+    _interpreter!.run(inputTensor, output);
+    return List<double>.from(output[0]);
+  }
 
-    final greenRatio = greenCount / pixelCount;
-    final yellowRatio = yellowCount / pixelCount;
-    final redRatio = redCount / pixelCount;
-    final whiteRatio = whiteCount / pixelCount;
-    final brownRatio = brownCount / pixelCount;
+  List<double> _dequantizeOutput(List<int> rawValues) {
+    final scale = _outputQuant.scale;
+    final zeroPoint = _outputQuant.zeroPoint;
+    return rawValues
+        .map((value) => (value - zeroPoint) * scale)
+        .toList(growable: false);
+  }
 
-    String label = 'Burger';
-    double confidence = 0.88;
-
-    if (whiteRatio > 0.22) {
-      if (greenRatio > 0.04 || redRatio > 0.04) {
-        label = availableLabels.contains('Sushi') ? 'Sushi' : 'Nasi Goreng';
-      } else {
-        label = availableLabels.contains('Nasi Goreng') ? 'Nasi Goreng' : 'Fried Rice';
-      }
-      confidence = 0.90;
-    } else if (greenRatio > 0.12) {
-      label = availableLabels.contains('Salad') ? 'Salad' : 'Bakmie / Noodles';
-      confidence = 0.92;
-    } else if (yellowRatio > 0.12) {
-      if (brownRatio > 0.08) {
-        label = availableLabels.contains('French Fries') ? 'French Fries' : 'Burger';
-      } else {
-        label = availableLabels.contains('Omelette') ? 'Omelette' : 'Pancake';
-      }
-      confidence = 0.89;
-    } else if (redRatio > 0.10 && avgR > 130) {
-      label = availableLabels.contains('Pizza') ? 'Pizza' : 'Spaghetti';
-      confidence = 0.91;
-    } else if (brownRatio > 0.20) {
-      if (greenRatio > 0.03) {
-        label = availableLabels.contains('Bakmie / Noodles') ? 'Bakmie / Noodles' : 'Mie Goreng';
-      } else if (avgR > 120 && avgG < 90) {
-        label = availableLabels.contains('Steak') ? 'Steak' : 'Burger';
-      } else {
-        label = availableLabels.contains('Burger') ? 'Burger' : 'Sandwich';
-      }
-      confidence = 0.89;
-    } else {
-      int index = hashAcc % (availableLabels.isNotEmpty ? availableLabels.length : 1);
-      label = availableLabels.isNotEmpty ? availableLabels[index] : 'Burger';
-      confidence = 0.85 + (hashAcc % 10) / 100.0;
+  List<MapEntry<int, double>> _rankScores(List<double> scores) {
+    final ranked = <MapEntry<int, double>>[];
+    for (var i = 0; i < scores.length; i++) {
+      if (_shouldSkipLabel(i)) continue;
+      ranked.add(MapEntry(i, scores[i]));
     }
+    ranked.sort((a, b) => b.value.compareTo(a.value));
+    return ranked;
+  }
 
-    return RecognitionResult(label: label, confidence: confidence.clamp(0.80, 0.96));
+  bool _shouldSkipLabel(int index) {
+    if (index >= _labels.length) return true;
+    final label = _labels[index].toLowerCase();
+    return label == 'background' || label == '__background__';
+  }
+
+  void _logTopPredictions(List<MapEntry<int, double>> ranked) {
+    if (!kDebugMode || ranked.isEmpty) return;
+
+    final top = ranked.take(5).map((entry) {
+      final name = entry.key < _labels.length ? _labels[entry.key] : '?';
+      return '$name=${(entry.value * 100).toStringAsFixed(1)}%';
+    }).join(', ');
+    debugPrint('Top predictions: $top');
+  }
+
+  static List<dynamic>? _prepareInputTensor(
+    Uint8List imageBytes,
+    int inputSize, {
+    required bool useUint8Input,
+  }) {
+    final decodedImage = img.decodeImage(imageBytes);
+    if (decodedImage == null) return null;
+
+    final resizedImage = img.copyResize(decodedImage, width: inputSize, height: inputSize);
+
+    return List.generate(
+      1,
+      (_) => List.generate(
+        inputSize,
+        (y) => List.generate(
+          inputSize,
+          (x) {
+            final pixel = resizedImage.getPixel(x, y);
+            if (useUint8Input) {
+              return [pixel.r.toInt(), pixel.g.toInt(), pixel.b.toInt()];
+            }
+            return [pixel.r / 255.0, pixel.g / 255.0, pixel.b / 255.0];
+          },
+        ),
+      ),
+    );
   }
 
   void close() {
     _interpreter?.close();
   }
-}
-
-class _IsolateResult {
-  final List<dynamic>? tensorInput;
-  final RecognitionResult fallbackResult;
-
-  _IsolateResult({required this.tensorInput, required this.fallbackResult});
 }

@@ -2,11 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'firebase_options.dart';
 import 'screens/home_screen.dart';
-import 'theme/app_theme.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-
+  
   try {
     await Firebase.initializeApp(
       options: DefaultFirebaseOptions.currentPlatform,
@@ -26,7 +25,16 @@ class FoodRecognizerApp extends StatelessWidget {
     return MaterialApp(
       title: 'Food Recognizer App',
       debugShowCheckedModeBanner: false,
-      theme: AppTheme.light,
+      theme: ThemeData(
+        useMaterial3: true,
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: Colors.teal,
+          primary: Colors.teal,
+        ),
+        appBarTheme: const AppBarTheme(
+          centerTitle: true,
+        ),
+      ),
       home: const HomeScreen(),
     );
   }
