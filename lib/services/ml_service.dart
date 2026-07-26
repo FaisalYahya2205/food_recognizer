@@ -7,8 +7,11 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_ml_model_downloader/firebase_ml_model_downloader.dart';
 import 'package:flutter_litert/flutter_litert.dart';
 import 'package:http/http.dart' as http;
+import 'package:camera/camera.dart';
 import 'package:image/image.dart' as img;
 import 'package:path_provider/path_provider.dart';
+
+import '../utils/camera_image_converter.dart';
 
 enum ModelSource { none, firebaseMl, firebaseStorage, localAsset }
 
@@ -227,6 +230,41 @@ class MLService {
     return classifyImageBytes(imageBytes);
   }
 
+  Future<RecognitionResult> classifyCameraImage(CameraImage cameraImage) async {
+    if (!_isModelLoaded || _interpreter == null) {
+      return RecognitionResult(label: 'Model belum tersedia', confidence: 0.0);
+    }
+
+    if (_labels.isEmpty) {
+      await _loadLabels();
+    }
+
+    if (!labelsMatchModel) {
+      return RecognitionResult(
+        label: 'Model dan label tidak cocok',
+        confidence: 0.0,
+      );
+    }
+
+    final frame = LiveCameraFrame.fromCameraImage(cameraImage);
+    final inputSize = _inputSize;
+    final outputSize = _outputClassCount;
+    final useUint8Input = _inputType == TensorType.uint8;
+
+    final inputTensor = await Isolate.run(
+      () => _prepareInputFromCameraFrame(
+        frame,
+        inputSize,
+        useUint8Input: useUint8Input,
+      ),
+    );
+    if (inputTensor == null) {
+      return RecognitionResult(label: 'Gambar tidak valid', confidence: 0.0);
+    }
+
+    return _predictFromInput(inputTensor, outputSize);
+  }
+
   Future<RecognitionResult> classifyImageBytes(Uint8List imageBytes) async {
     if (!_isModelLoaded || _interpreter == null) {
       return RecognitionResult(label: 'Model belum tersedia', confidence: 0.0);
@@ -258,10 +296,18 @@ class MLService {
       return RecognitionResult(label: 'Gambar tidak valid', confidence: 0.0);
     }
 
+    return _predictFromInput(inputTensor, outputSize);
+  }
+
+  RecognitionResult _predictFromInput(List<dynamic> inputTensor, int outputSize) {
     try {
       final scores = _runInference(inputTensor, outputSize);
       final ranked = _rankScores(scores);
       _logTopPredictions(ranked);
+
+      if (ranked.isEmpty) {
+        return RecognitionResult(label: 'Makanan tidak dikenali', confidence: 0.0);
+      }
 
       final best = ranked.first;
       if (best.value < _minConfidence) {
@@ -325,6 +371,17 @@ class MLService {
     debugPrint('Top predictions: $top');
   }
 
+  static List<dynamic>? _prepareInputFromCameraFrame(
+    LiveCameraFrame frame,
+    int inputSize, {
+    required bool useUint8Input,
+  }) {
+    final decodedImage = CameraImageConverter.toImage(frame);
+    if (decodedImage == null) return null;
+
+    return _buildInputTensor(decodedImage, inputSize, useUint8Input: useUint8Input);
+  }
+
   static List<dynamic>? _prepareInputTensor(
     Uint8List imageBytes,
     int inputSize, {
@@ -333,6 +390,14 @@ class MLService {
     final decodedImage = img.decodeImage(imageBytes);
     if (decodedImage == null) return null;
 
+    return _buildInputTensor(decodedImage, inputSize, useUint8Input: useUint8Input);
+  }
+
+  static List<dynamic> _buildInputTensor(
+    img.Image decodedImage,
+    int inputSize, {
+    required bool useUint8Input,
+  }) {
     final resizedImage = img.copyResize(decodedImage, width: inputSize, height: inputSize);
 
     return List.generate(

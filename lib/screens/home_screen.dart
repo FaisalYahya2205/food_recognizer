@@ -24,6 +24,7 @@ class _HomeScreenState extends State<HomeScreen> {
   List<CameraDescription>? _cameras;
   bool _isCameraStreaming = false;
   bool _isProcessingFrame = false;
+  DateTime? _lastLiveInferenceAt;
   RecognitionResult? _liveResult;
   bool _isLoading = false;
 
@@ -95,13 +96,18 @@ class _HomeScreenState extends State<HomeScreen> {
       setState(() => _isCameraStreaming = true);
       _cameraController!.startImageStream((CameraImage image) async {
         if (_isProcessingFrame) return;
+
+        final now = DateTime.now();
+        if (_lastLiveInferenceAt != null &&
+            now.difference(_lastLiveInferenceAt!) < const Duration(milliseconds: 700)) {
+          return;
+        }
+
         _isProcessingFrame = true;
 
         try {
-          // Convert plane 0 buffer or bytes to image for isolate processing
-          final planes = image.planes;
-          final bytes = planes.first.bytes;
-          final result = await _mlService.classifyImageBytes(bytes);
+          final result = await _mlService.classifyCameraImage(image);
+          _lastLiveInferenceAt = DateTime.now();
           if (mounted && _isCameraStreaming) {
             setState(() {
               _liveResult = result;
@@ -121,7 +127,6 @@ class _HomeScreenState extends State<HomeScreen> {
       final XFile? picked = await _picker.pickImage(source: source);
       if (picked == null) return;
 
-      // Crop feature using image_cropper (Skilled Kriteria 1)
       CroppedFile? cropped = await ImageCropper().cropImage(
         sourcePath: picked.path,
         uiSettings: [
@@ -145,7 +150,6 @@ class _HomeScreenState extends State<HomeScreen> {
         _isLoading = true;
       });
 
-      // Background Isolate ML Inference (Skilled Kriteria 2)
       final result = await _mlService.classifyImage(fileToProcess);
 
       setState(() {
@@ -179,21 +183,39 @@ class _HomeScreenState extends State<HomeScreen> {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Pengaturan Gemini API Key'),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: AppColors.amber.withValues(alpha: 0.15),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: const Icon(Icons.vpn_key, color: AppColors.amber, size: 20),
+            ),
+            const SizedBox(width: 10),
+            const Text('Gemini API Key'),
+          ],
+        ),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             const Text(
               'Masukkan Gemini API Key Anda untuk mengaktifkan fitur pencarian nutrisi dinamis.',
-              style: TextStyle(fontSize: 13),
+              style: TextStyle(fontSize: 13, color: AppColors.muted),
             ),
             const SizedBox(height: 12),
             TextField(
               controller: controller,
-              decoration: const InputDecoration(
-                border: OutlineInputBorder(),
+              decoration: InputDecoration(
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
                 hintText: 'AIzaSy...',
                 labelText: 'Gemini API Key',
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: const BorderSide(color: AppColors.coral, width: 2),
+                ),
               ),
             ),
           ],
@@ -201,7 +223,7 @@ class _HomeScreenState extends State<HomeScreen> {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: const Text('Batal'),
+            child: const Text('Batal', style: TextStyle(color: AppColors.muted)),
           ),
           ElevatedButton(
             onPressed: () {
@@ -228,177 +250,386 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Food Recognizer App'),
-        backgroundColor: Colors.teal,
-        foregroundColor: Colors.white,
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.vpn_key),
-            tooltip: 'Gemini API Key',
-            onPressed: _showApiKeyDialog,
-          ),
-        ],
-      ),
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
           : Column(
               children: [
-                // Top Camera Stream Section
-                Expanded(
-                  child: Container(
-                    margin: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: Colors.black,
-                      borderRadius: BorderRadius.circular(16),
-                    ),
-                    clipBehavior: Clip.antiAlias,
-                    child: Stack(
-                      children: [
-                        if (_cameraController != null && _cameraController!.value.isInitialized)
-                          CameraPreview(_cameraController!)
-                        else
-                          const Center(
-                            child: Column(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                Icon(Icons.camera_alt, size: 64, color: Colors.white54),
-                                SizedBox(height: 12),
-                                Text(
-                                  'Kamera Siap Disambungkan',
-                                  style: TextStyle(color: Colors.white70),
-                                ),
-                              ],
-                            ),
-                          ),
+                _buildHeader(),
+                Expanded(child: _buildCameraSection()),
+                _buildActionPanel(),
+              ],
+            ),
+    );
+  }
 
-                        // Real-time Inference Result Overlay Badge (Advanced Kriteria 1)
-                        if (_isCameraStreaming && _liveResult != null)
-                          Positioned(
-                            top: 16,
-                            left: 16,
-                            right: 16,
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                              decoration: BoxDecoration(
-                                color: Colors.black87,
-                                borderRadius: BorderRadius.circular(12),
-                                border: Border.all(color: Colors.tealAccent, width: 2),
-                              ),
-                              child: Row(
-                                children: [
-                                  const Icon(Icons.videocam, color: Colors.tealAccent),
-                                  const SizedBox(width: 12),
-                                  Expanded(
-                                    child: Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        Text(
-                                          _liveResult!.label,
-                                          style: const TextStyle(
-                                            color: Colors.white,
-                                            fontWeight: FontWeight.bold,
-                                            fontSize: 18,
-                                          ),
-                                        ),
-                                        Text(
-                                          'Confidence: ${_liveResult!.confidencePercentage}',
-                                          style: const TextStyle(color: Colors.tealAccent),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                  ElevatedButton(
-                                    style: ElevatedButton.styleFrom(
-                                      backgroundColor: Colors.teal,
-                                      foregroundColor: Colors.white,
-                                    ),
-                                    onPressed: () {
-                                      _cameraController?.stopImageStream();
-                                      setState(() => _isCameraStreaming = false);
-                                      Navigator.push(
-                                        context,
-                                        MaterialPageRoute(
-                                          builder: (_) => PredictionDetailScreen(
-                                            imageFile: null,
-                                            result: _liveResult!,
-                                          ),
-                                        ),
-                                      );
-                                    },
-                                    child: const Text('Detail'),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                      ],
-                    ),
-                  ),
+  Widget _buildHeader() {
+    return Container(
+      width: double.infinity,
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [AppColors.coral, AppColors.coralDark],
+        ),
+        borderRadius: BorderRadius.only(
+          bottomLeft: Radius.circular(28),
+          bottomRight: Radius.circular(28),
+        ),
+      ),
+      child: SafeArea(
+        bottom: false,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 12, 12, 24),
+          child: Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.2),
+                  borderRadius: BorderRadius.circular(14),
                 ),
-
-                // Bottom Action Buttons Panel
-                Container(
-                  padding: const EdgeInsets.all(16),
+                child: const Icon(Icons.restaurant, color: Colors.white, size: 26),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Food Recognizer',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 22,
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: -0.3,
+                      ),
+                    ),
+                    Text(
+                      'Kenali makanan dengan AI',
+                      style: TextStyle(
+                        color: Colors.white.withValues(alpha: 0.85),
+                        fontSize: 13,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              IconButton(
+                icon: Container(
+                  padding: const EdgeInsets.all(8),
                   decoration: BoxDecoration(
-                    color: Colors.white,
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.black.withValues(alpha: 0.05),
-                        blurRadius: 10,
-                        offset: const Offset(0, -4),
+                    color: Colors.white.withValues(alpha: 0.2),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: const Icon(Icons.vpn_key, color: Colors.white, size: 20),
+                ),
+                tooltip: 'Gemini API Key',
+                onPressed: _showApiKeyDialog,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildCameraSection() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 20, 16, 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 4,
+                height: 18,
+                decoration: BoxDecoration(
+                  color: AppColors.coral,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+              const SizedBox(width: 8),
+              const Text(
+                'Pratinjau Kamera',
+                style: TextStyle(
+                  fontSize: 15,
+                  fontWeight: FontWeight.w700,
+                  color: AppColors.charcoal,
+                ),
+              ),
+              const Spacer(),
+              if (_isCameraStreaming)
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: AppColors.liveRed.withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(color: AppColors.liveRed.withValues(alpha: 0.4)),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Container(
+                        width: 7,
+                        height: 7,
+                        decoration: const BoxDecoration(
+                          color: AppColors.liveRed,
+                          shape: BoxShape.circle,
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      const Text(
+                        'LIVE',
+                        style: TextStyle(
+                          color: AppColors.liveRed,
+                          fontSize: 11,
+                          fontWeight: FontWeight.w800,
+                          letterSpacing: 1,
+                        ),
                       ),
                     ],
                   ),
-                  child: Column(
-                    children: [
-                      ElevatedButton.icon(
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: _isCameraStreaming ? Colors.redAccent : Colors.teal,
-                          foregroundColor: Colors.white,
-                          minimumSize: const Size(double.infinity, 50),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                        ),
-                        icon: Icon(_isCameraStreaming ? Icons.videocam_off : Icons.videocam),
-                        label: Text(_isCameraStreaming ? 'Hentikan Live Camera Stream' : 'Mulai Live Camera Stream (Real-Time)'),
-                        onPressed: _toggleCameraStream,
-                      ),
-                      const SizedBox(height: 12),
-                      Row(
+                ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Expanded(
+            child: Container(
+              decoration: BoxDecoration(
+                color: AppColors.charcoal,
+                borderRadius: BorderRadius.circular(24),
+                boxShadow: [
+                  BoxShadow(
+                    color: AppColors.coral.withValues(alpha: 0.15),
+                    blurRadius: 20,
+                    offset: const Offset(0, 8),
+                  ),
+                ],
+              ),
+              clipBehavior: Clip.antiAlias,
+              child: Stack(
+                children: [
+                  if (_cameraController != null && _cameraController!.value.isInitialized)
+                    CameraPreview(_cameraController!)
+                  else
+                    Center(
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
                         children: [
-                          Expanded(
-                            child: OutlinedButton.icon(
-                              style: OutlinedButton.styleFrom(
-                                padding: const EdgeInsets.symmetric(vertical: 14),
-                                side: const BorderSide(color: Colors.teal),
-                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                              ),
-                              icon: const Icon(Icons.camera_alt, color: Colors.teal),
-                              label: const Text('Kamera (Crop)', style: TextStyle(color: Colors.teal)),
-                              onPressed: () => _pickAndCropImage(ImageSource.camera),
+                          Container(
+                            padding: const EdgeInsets.all(20),
+                            decoration: BoxDecoration(
+                              color: Colors.white.withValues(alpha: 0.08),
+                              shape: BoxShape.circle,
+                            ),
+                            child: Icon(
+                              Icons.camera_alt_outlined,
+                              size: 48,
+                              color: Colors.white.withValues(alpha: 0.5),
                             ),
                           ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: OutlinedButton.icon(
-                              style: OutlinedButton.styleFrom(
-                                padding: const EdgeInsets.symmetric(vertical: 14),
-                                side: const BorderSide(color: Colors.teal),
-                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                              ),
-                              icon: const Icon(Icons.photo_library, color: Colors.teal),
-                              label: const Text('Galeri (Crop)', style: TextStyle(color: Colors.teal)),
-                              onPressed: () => _pickAndCropImage(ImageSource.gallery),
+                          const SizedBox(height: 16),
+                          Text(
+                            'Kamera Siap Disambungkan',
+                            style: TextStyle(
+                              color: Colors.white.withValues(alpha: 0.6),
+                              fontSize: 14,
                             ),
                           ),
                         ],
                       ),
-                    ],
-                  ),
-                ),
-              ],
+                    ),
+
+                  if (_isCameraStreaming && _liveResult != null)
+                    Positioned(
+                      top: 16,
+                      left: 16,
+                      right: 16,
+                      child: Container(
+                        padding: const EdgeInsets.all(14),
+                        decoration: BoxDecoration(
+                          color: Colors.white.withValues(alpha: 0.95),
+                          borderRadius: BorderRadius.circular(16),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withValues(alpha: 0.15),
+                              blurRadius: 12,
+                              offset: const Offset(0, 4),
+                            ),
+                          ],
+                        ),
+                        child: Row(
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.all(8),
+                              decoration: BoxDecoration(
+                                color: AppColors.coral.withValues(alpha: 0.12),
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                              child: const Icon(Icons.fastfood, color: AppColors.coral, size: 22),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Text(
+                                    _liveResult!.label,
+                                    style: const TextStyle(
+                                      color: AppColors.charcoal,
+                                      fontWeight: FontWeight.w800,
+                                      fontSize: 16,
+                                    ),
+                                  ),
+                                  Text(
+                                    'Confidence: ${_liveResult!.confidencePercentage}',
+                                    style: const TextStyle(
+                                      color: AppColors.coral,
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            ElevatedButton(
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: AppColors.coral,
+                                foregroundColor: Colors.white,
+                                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                                minimumSize: Size.zero,
+                                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                              ),
+                              onPressed: () {
+                                _cameraController?.stopImageStream();
+                                setState(() => _isCameraStreaming = false);
+                                Navigator.push(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (_) => PredictionDetailScreen(
+                                      imageFile: null,
+                                      result: _liveResult!,
+                                    ),
+                                  ),
+                                );
+                              },
+                              child: const Text('Detail'),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                ],
+              ),
             ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildActionPanel() {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: const BorderRadius.only(
+          topLeft: Radius.circular(28),
+          topRight: Radius.circular(28),
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: AppColors.charcoal.withValues(alpha: 0.08),
+            blurRadius: 20,
+            offset: const Offset(0, -6),
+          ),
+        ],
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 40,
+            height: 4,
+            decoration: BoxDecoration(
+              color: AppColors.creamDark,
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+          const SizedBox(height: 16),
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton.icon(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: _isCameraStreaming ? AppColors.liveRed : AppColors.coral,
+                foregroundColor: Colors.white,
+                minimumSize: const Size(double.infinity, 52),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+              ),
+              icon: Icon(_isCameraStreaming ? Icons.videocam_off : Icons.videocam),
+              label: Text(
+                _isCameraStreaming
+                    ? 'Hentikan Live Camera Stream'
+                    : 'Mulai Live Camera Stream',
+              ),
+              onPressed: _toggleCameraStream,
+            ),
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: _buildSourceButton(
+                  icon: Icons.camera_alt_outlined,
+                  label: 'Kamera',
+                  onPressed: () => _pickAndCropImage(ImageSource.camera),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _buildSourceButton(
+                  icon: Icons.photo_library_outlined,
+                  label: 'Galeri',
+                  onPressed: () => _pickAndCropImage(ImageSource.gallery),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSourceButton({
+    required IconData icon,
+    required String label,
+    required VoidCallback onPressed,
+  }) {
+    return OutlinedButton(
+      style: OutlinedButton.styleFrom(
+        padding: const EdgeInsets.symmetric(vertical: 16),
+        side: BorderSide(color: AppColors.coral.withValues(alpha: 0.4)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        backgroundColor: AppColors.cream,
+      ),
+      onPressed: onPressed,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, color: AppColors.coral, size: 24),
+          const SizedBox(height: 6),
+          Text(
+            label,
+            style: const TextStyle(
+              color: AppColors.coral,
+              fontWeight: FontWeight.w600,
+              fontSize: 13,
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
