@@ -1,5 +1,5 @@
-name: food_recognizer_app
-description: "A new Flutter project."
+name: nutrisnap_app
+description: "NutriSnap — on-device food classification with LiteRT."
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev
@@ -53,7 +53,7 @@ dev_dependencies:
 flutter:
   uses-material-design: true
   assets:
-    - assets/models/
+    - assets/ml/
 
 
   # An image asset can refer to one or more resolution-specific "variants", see

@@ -1,33 +1,17 @@
-import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
-import 'firebase_options.dart';
-import 'screens/home_screen.dart';
-import 'theme/app_theme.dart';
+import 'package:flutter/material.dart';
 
-void main() async {
+import 'app/nutrisnap_app.dart';
+import 'config/firebase_bootstrap.dart';
+
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  
+
   try {
-    await Firebase.initializeApp(
-      options: DefaultFirebaseOptions.currentPlatform,
-    );
-  } catch (e) {
-    debugPrint('Firebase init warning: $e');
+    await Firebase.initializeApp(options: FirebaseBootstrap.forPlatform);
+  } catch (error) {
+    debugPrint('Firebase init: $error');
   }
 
-  runApp(const FoodRecognizerApp());
-}
-
-class FoodRecognizerApp extends StatelessWidget {
-  const FoodRecognizerApp({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Food Recognizer App',
-      debugShowCheckedModeBanner: false,
-      theme: AppTheme.light,
-      home: const HomeScreen(),
-    );
-  }
+  runApp(const NutriSnapApp());
 }

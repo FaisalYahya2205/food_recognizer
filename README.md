@@ -1,17 +1,29 @@
-# food_recognizer_app
+# NutriSnap
 
-A new Flutter project.
+Aplikasi Flutter untuk klasifikasi makanan on-device dengan LiteRT (TensorFlow Lite), live camera, Gemini AI nutrition, dan referensi resep TheMealDB.
 
-## Getting Started
+## Identitas
 
-This project is a starting point for a Flutter application.
+- **Package:** `nutrisnap_app`
+- **Bundle ID:** `com.dicoding.nutrisnap`
+- **Nama app:** NutriSnap
 
-A few resources to get you started if this is your first Flutter project:
+## Menjalankan
 
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
+```bash
+flutter pub get
+flutter run
+```
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+## Fitur
+
+- Live camera stream + klasifikasi makanan
+- Upload foto dari kamera / galeri dengan crop
+- Detail prediksi + nutrisi (Gemini) + resep (TheMealDB)
+- Model ML: bundled asset dengan fallback Firebase Storage / Firebase ML
+
+## Konfigurasi opsional
+
+```bash
+flutter run --dart-define=GEMINI_API_KEY=your_key_here
+```

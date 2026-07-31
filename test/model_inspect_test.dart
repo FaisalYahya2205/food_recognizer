@@ -1,12 +1,11 @@
-import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_litert/flutter_litert.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  test('inspect food_classifier.tflite tensors', () async {
-    final interpreter = await Interpreter.fromAsset('assets/models/food_classifier.tflite');
+  test('inspect dish_classifier.tflite tensors', () async {
+    final interpreter = await Interpreter.fromAsset('assets/ml/dish_classifier.tflite');
     final input = interpreter.getInputTensor(0);
     final output = interpreter.getOutputTensor(0);
 
